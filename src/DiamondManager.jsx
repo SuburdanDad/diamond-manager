@@ -71,24 +71,64 @@ const DURATIONS = [
 ];
 
 // ── Persistence ─────────────────────────────────────────────────────────────
+// Auto-detects environment: uses Supabase in production, window.storage in
+// Claude artifacts, and localStorage as fallback.
 
-const STORAGE_KEY = "pll-diamond-v4";
+const IS_ARTIFACT = typeof window !== "undefined" && typeof window.storage?.get === "function";
+const HAS_SUPABASE = typeof window !== "undefined" && window.__SUPABASE_CONFIGURED__;
+
+// Try dynamic import of storage adapter (works in Vite build, ignored in artifacts)
+let supabaseStorage = null;
+try {
+  if (!IS_ARTIFACT) {
+    // This import is resolved at build time by Vite. In the artifact runtime
+    // it will fail silently and fall back to localStorage.
+    const mod = await import("./storage.js").catch(() => null);
+    if (mod) supabaseStorage = mod;
+  }
+} catch { /* artifact environment — ignore */ }
+
+const LOCAL_KEY = "pll-diamond-events-v4";
+
+function localLoad() {
+  try { const r = localStorage.getItem(LOCAL_KEY); return r ? JSON.parse(r) : []; } catch { return []; }
+}
+function localSave(events) {
+  try { localStorage.setItem(LOCAL_KEY, JSON.stringify(events)); } catch { /* full */ }
+}
 
 async function loadEvents() {
-  try {
-    const r = await window.storage.get(STORAGE_KEY);
-    return r ? JSON.parse(r.value) : [];
-  } catch {
-    return [];
+  if (IS_ARTIFACT) {
+    try { const r = await window.storage.get(LOCAL_KEY); return r ? JSON.parse(r.value) : []; } catch { return []; }
+  }
+  if (supabaseStorage) {
+    try { return await supabaseStorage.loadEvents(); } catch { return localLoad(); }
+  }
+  return localLoad();
+}
+
+async function persistEvent(ev) {
+  if (IS_ARTIFACT) {
+    // Artifact: save all events via window.storage (handled by caller)
+    return;
+  }
+  if (supabaseStorage) {
+    try { await supabaseStorage.saveEvent(ev); } catch { /* offline fallback */ }
   }
 }
 
-async function saveEvents(events) {
-  try {
-    await window.storage.set(STORAGE_KEY, JSON.stringify(events));
-  } catch (e) {
-    console.error("Storage write failed:", e);
+async function persistDelete(id) {
+  if (supabaseStorage) {
+    try { await supabaseStorage.deleteEvent(id); } catch { /* offline */ }
   }
+}
+
+async function persistAll(events) {
+  if (IS_ARTIFACT) {
+    try { await window.storage.set(LOCAL_KEY, JSON.stringify(events)); } catch { /* ignore */ }
+    return;
+  }
+  localSave(events);
 }
 
 // ── Utility helpers ─────────────────────────────────────────────────────────
@@ -314,12 +354,13 @@ export default function DiamondManager() {
   const [filterDivision, setFilterDivision] = useState("all");
   const [filterField, setFilterField] = useState("all");
   const [toast, setToast] = useState(null);
-  const [loaded, setLoaded] = useState(false);
   const [showExport, setShowExport] = useState(false);
 
-  // Load / save
-  useEffect(() => { loadEvents().then((d) => { setEvents(d); setLoaded(true); }); }, []);
-  useEffect(() => { if (loaded) saveEvents(events); }, [events, loaded]);
+  // Load events on mount
+  useEffect(() => { loadEvents().then(setEvents); }, []);
+
+  // Persist all events when they change (for artifact environment)
+  useEffect(() => { persistAll(events); }, [events]);
 
   // Derived
   const weekDates = useMemo(() => getWeekDates(weekOffset), [weekOffset]);
@@ -368,30 +409,30 @@ export default function DiamondManager() {
       flash("⚠️ Field conflict — another event occupies this slot.", "error");
       return;
     }
-    if (ev.id) {
-      setEvents((prev) => prev.map((e) => (e.id === ev.id ? ev : e)));
-      flash("Updated!");
-    } else {
-      setEvents((prev) => [...prev, { ...ev, id: uid() }]);
+    const isNew = !ev.id;
+    const finalEvent = isNew ? { ...ev, id: uid() } : ev;
+    if (isNew) {
+      setEvents((prev) => [...prev, finalEvent]);
       flash("Scheduled! ⚾");
+    } else {
+      setEvents((prev) => prev.map((e) => (e.id === ev.id ? finalEvent : e)));
+      flash("Updated!");
     }
+    persistEvent(finalEvent);
     setModalEvent(null);
   }, [events, flash]);
 
   const deleteEvent = useCallback((id) => {
     setEvents((prev) => prev.filter((e) => e.id !== id));
+    persistDelete(id);
     setModalEvent(null);
     flash("Removed");
   }, [flash]);
 
   const markRainout = useCallback((ev) => {
-    setEvents((prev) =>
-      prev.map((e) =>
-        e.id === ev.id
-          ? { ...e, eventType: "rainout", notes: `RAINED OUT — ${fmtTime(e.startTime)} on ${e.date}. ${e.notes || ""}`.trim() }
-          : e
-      )
-    );
+    const updated = { ...ev, eventType: "rainout", notes: `RAINED OUT — ${fmtTime(ev.startTime)} on ${ev.date}. ${ev.notes || ""}`.trim() };
+    setEvents((prev) => prev.map((e) => (e.id === ev.id ? updated : e)));
+    persistEvent(updated);
     flash("Marked as rain out 🌧️");
     setModalEvent(null);
   }, [flash]);
