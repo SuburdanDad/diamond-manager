@@ -49,12 +49,12 @@ const FIELD_STRIPE = ["#4A8C3F", "#C49A5C", "#8B7355", "#2E7D32", "#A1887F", "#6
 const TIME_SLOTS = (() => {
   const slots = [];
   for (let h = 8; h <= 21; h++) {
-    for (let m = 0; m < 60; m += 30) {
+    for (let m = 0; m < 60; m += 15) {
       if (h === 21 && m > 0) break;
       const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
       slots.push({
         value: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`,
-        label: `${h12}:${m === 0 ? "00" : m} ${h >= 12 ? "PM" : "AM"}`,
+        label: `${h12}:${String(m).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`,
       });
     }
   }
@@ -71,12 +71,24 @@ const DURATIONS = [
 
 // ── Persistence ─────────────────────────────────────────────────────────────
 
-import {
-  loadEvents,
-  saveEvent as saveEventToDb,
-  deleteEvent as deleteEventFromDb,
-  saveAllEvents,
-} from "./storage.js";
+const STORAGE_KEY = "pll-diamond-v4";
+
+async function loadEvents() {
+  try {
+    const r = await window.storage.get(STORAGE_KEY);
+    return r ? JSON.parse(r.value) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveEvents(events) {
+  try {
+    await window.storage.set(STORAGE_KEY, JSON.stringify(events));
+  } catch (e) {
+    console.error("Storage write failed:", e);
+  }
+}
 
 // ── Utility helpers ─────────────────────────────────────────────────────────
 
@@ -90,6 +102,33 @@ function getWeekDates(offset = 0) {
     d.setDate(monday.getDate() + i);
     return d;
   });
+}
+
+function getMonthData(offset = 0) {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth() + offset;
+  const first = new Date(year, month, 1);
+  const last = new Date(year, month + 1, 0);
+  const startDow = first.getDay() === 0 ? 6 : first.getDay() - 1; // Monday = 0
+  const days = [];
+  // Fill leading blanks
+  for (let i = 0; i < startDow; i++) {
+    const d = new Date(first);
+    d.setDate(d.getDate() - (startDow - i));
+    days.push({ date: d, inMonth: false });
+  }
+  // Fill month days
+  for (let i = 1; i <= last.getDate(); i++) {
+    days.push({ date: new Date(year, month, i), inMonth: true });
+  }
+  // Fill trailing to complete grid (6 rows × 7 cols max)
+  while (days.length < 42 && days.length % 7 !== 0) {
+    const d = new Date(last);
+    d.setDate(d.getDate() + (days.length - startDow - last.getDate() + 1));
+    days.push({ date: d, inMonth: false });
+  }
+  return { year: first.getFullYear(), month: first.getMonth(), days, label: first.toLocaleDateString("en-US", { month: "long", year: "numeric" }) };
 }
 
 const fmtDate  = (d) => d.toISOString().split("T")[0];
@@ -267,19 +306,23 @@ function DiamondLogo({ size = 44 }) {
 export default function DiamondManager() {
   const [events, setEvents] = useState([]);
   const [weekOffset, setWeekOffset] = useState(0);
+  const [monthOffset, setMonthOffset] = useState(0);
   const [view, setView] = useState("week");
   const [selectedDay, setSelectedDay] = useState(new Date());
   const [modalEvent, setModalEvent] = useState(null);
   const [filterDivision, setFilterDivision] = useState("all");
   const [filterField, setFilterField] = useState("all");
   const [toast, setToast] = useState(null);
+  const [loaded, setLoaded] = useState(false);
   const [showExport, setShowExport] = useState(false);
 
-  // Load events from Supabase on mount
-  useEffect(() => { loadEvents().then(setEvents); }, []);
+  // Load / save
+  useEffect(() => { loadEvents().then((d) => { setEvents(d); setLoaded(true); }); }, []);
+  useEffect(() => { if (loaded) saveEvents(events); }, [events, loaded]);
 
   // Derived
   const weekDates = useMemo(() => getWeekDates(weekOffset), [weekOffset]);
+  const monthData = useMemo(() => getMonthData(monthOffset), [monthOffset]);
   const filteredEvents = useMemo(
     () => events.filter((e) => (filterDivision === "all" || e.divisionId === filterDivision) && (filterField === "all" || e.fieldId === filterField)),
     [events, filterDivision, filterField]
@@ -324,30 +367,30 @@ export default function DiamondManager() {
       flash("⚠️ Field conflict — another event occupies this slot.", "error");
       return;
     }
-    const isNew = !ev.id;
-    const finalEvent = isNew ? { ...ev, id: uid() } : ev;
-    if (isNew) {
-      setEvents((prev) => [...prev, finalEvent]);
-      flash("Scheduled! ⚾");
-    } else {
-      setEvents((prev) => prev.map((e) => (e.id === ev.id ? finalEvent : e)));
+    if (ev.id) {
+      setEvents((prev) => prev.map((e) => (e.id === ev.id ? ev : e)));
       flash("Updated!");
+    } else {
+      setEvents((prev) => [...prev, { ...ev, id: uid() }]);
+      flash("Scheduled! ⚾");
     }
-    saveEventToDb(finalEvent);
     setModalEvent(null);
   }, [events, flash]);
 
   const deleteEvent = useCallback((id) => {
     setEvents((prev) => prev.filter((e) => e.id !== id));
-    deleteEventFromDb(id);
     setModalEvent(null);
     flash("Removed");
   }, [flash]);
 
   const markRainout = useCallback((ev) => {
-    const updated = { ...ev, eventType: "rainout", notes: `RAINED OUT — ${fmtTime(ev.startTime)} on ${ev.date}. ${ev.notes || ""}`.trim() };
-    setEvents((prev) => prev.map((e) => (e.id === ev.id ? updated : e)));
-    saveEventToDb(updated);
+    setEvents((prev) =>
+      prev.map((e) =>
+        e.id === ev.id
+          ? { ...e, eventType: "rainout", notes: `RAINED OUT — ${fmtTime(e.startTime)} on ${e.date}. ${e.notes || ""}`.trim() }
+          : e
+      )
+    );
     flash("Marked as rain out 🌧️");
     setModalEvent(null);
   }, [flash]);
@@ -427,15 +470,27 @@ export default function DiamondManager() {
         <div style={S.toolbar}>
           <div style={S.toolbarLeft}>
             <div style={S.viewToggle}>
-              {[["week", "Week"], ["day", "Day"], ["list", "List"]].map(([key, label]) => (
+              {[["month", "Month"], ["week", "Week"], ["day", "Day"], ["list", "List"]].map(([key, label]) => (
                 <button key={key} style={{ ...S.toggleBtn, ...(view === key ? S.toggleActive : {}) }} onClick={() => setView(key)}>{label}</button>
               ))}
             </div>
             <div style={S.navGroup}>
-              <button style={S.navBtn} onClick={() => { setWeekOffset(0); setSelectedDay(new Date()); }}>Today</button>
-              <button style={S.navBtn} onClick={() => view === "day" ? setSelectedDay((p) => { const d = new Date(p); d.setDate(d.getDate() - 1); return d; }) : setWeekOffset((w) => w - 1)}>‹</button>
-              <span style={S.navLabel}>{view === "day" ? fmtLong(selectedDay) : `${fmtShort(weekDates[0])} — ${fmtShort(weekDates[6])}`}</span>
-              <button style={S.navBtn} onClick={() => view === "day" ? setSelectedDay((p) => { const d = new Date(p); d.setDate(d.getDate() + 1); return d; }) : setWeekOffset((w) => w + 1)}>›</button>
+              <button style={S.navBtn} onClick={() => { setWeekOffset(0); setMonthOffset(0); setSelectedDay(new Date()); }}>Today</button>
+              <button style={S.navBtn} onClick={() => {
+                if (view === "day") setSelectedDay((p) => { const d = new Date(p); d.setDate(d.getDate() - 1); return d; });
+                else if (view === "month") setMonthOffset((m) => m - 1);
+                else setWeekOffset((w) => w - 1);
+              }}>‹</button>
+              <span style={S.navLabel}>{
+                view === "day" ? fmtLong(selectedDay) :
+                view === "month" ? monthData.label :
+                `${fmtShort(weekDates[0])} — ${fmtShort(weekDates[6])}`
+              }</span>
+              <button style={S.navBtn} onClick={() => {
+                if (view === "day") setSelectedDay((p) => { const d = new Date(p); d.setDate(d.getDate() + 1); return d; });
+                else if (view === "month") setMonthOffset((m) => m + 1);
+                else setWeekOffset((w) => w + 1);
+              }}>›</button>
             </div>
           </div>
           <div style={S.filters}>
@@ -454,6 +509,7 @@ export default function DiamondManager() {
 
       {/* ── Main content ── */}
       <main style={{ minHeight: "50vh" }}>
+        {view === "month" && <MonthView monthData={monthData} events={filteredEvents} onAdd={openNewEvent} onEdit={openEditEvent} onDayClick={(d) => { setSelectedDay(d); setView("day"); }} />}
         {view === "week" && <WeekView dates={weekDates} events={filteredEvents} onAdd={openNewEvent} onEdit={openEditEvent} onDayClick={(d) => { setSelectedDay(d); setView("day"); }} />}
         {view === "day"  && <DayView date={selectedDay} events={filteredEvents} onAdd={openNewEvent} onEdit={openEditEvent} />}
         {view === "list" && <ListView events={filteredEvents} onEdit={openEditEvent} />}
@@ -487,6 +543,59 @@ export default function DiamondManager() {
 
       {/* ── Toast ── */}
       {toast && <div style={{ ...S.toast, background: toast.type === "error" ? "#C0392B" : "#27AE60" }}>{toast.msg}</div>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MONTH VIEW
+// ═══════════════════════════════════════════════════════════════════════════
+
+function MonthView({ monthData, events, onAdd, onEdit, onDayClick }) {
+  const DOW = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+  return (
+    <div style={{ padding: "12px 16px" }}>
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 1,
+        background: "#E0D5C5", borderRadius: 12, overflow: "hidden",
+      }}>
+        {/* Day-of-week headers */}
+        {DOW.map((d) => (
+          <div key={d} style={{ background: "#F7F3ED", padding: "8px 4px", textAlign: "center", fontSize: 9, fontWeight: 800, color: "#A0936E", letterSpacing: "0.1em" }}>{d}</div>
+        ))}
+        {/* Day cells */}
+        {monthData.days.map(({ date, inMonth }, i) => {
+          const dateStr = fmtDate(date);
+          const dayEvents = events.filter((e) => e.date === dateStr);
+          const today = isToday(date);
+          return (
+            <div key={i} onClick={() => onDayClick(date)} style={{
+              background: today ? "#E8F5E9" : inMonth ? "#fff" : "#F7F3ED",
+              padding: 4, minHeight: 72, cursor: "pointer",
+              opacity: inMonth ? 1 : 0.4,
+            }}>
+              <div style={{
+                fontSize: 12, fontWeight: 800, marginBottom: 3,
+                color: today ? "#fff" : inMonth ? "#3E2723" : "#A0936E",
+                ...(today ? {
+                  background: "#4A8C3F", borderRadius: "50%", width: 22, height: 22,
+                  display: "inline-flex", alignItems: "center", justifyContent: "center",
+                } : {}),
+              }}>
+                {date.getDate()}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                {dayEvents.slice(0, 3).map((ev) => (
+                  <EventChip key={ev.id} event={ev} onClick={(e) => { e.stopPropagation(); onEdit(ev); }} />
+                ))}
+                {dayEvents.length > 3 && (
+                  <div style={{ fontSize: 9, color: "#8B7355", fontWeight: 700, paddingLeft: 4 }}>+{dayEvents.length - 3} more</div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -897,7 +1006,7 @@ const S = {
   brandSub:       { fontSize: 11, color: "#8B7355", fontWeight: 600 },
   headerButtons:  { display: "flex", gap: 8, alignItems: "center" },
   iconBtn:        { background: "#F7F3ED", border: "1.5px dashed rgba(192,57,43,0.25)", borderRadius: 8, padding: "7px 10px", cursor: "pointer", fontSize: 15 },
-  primaryBtn:     { background: "#4A8C3F", color: "#fff", border: "2px dashed rgba(192,57,43,0.5)", borderRadius: 10, padding: "8px 14px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(74,140,63,0.25)" },
+  primaryBtn:     { background: "#4A8C3F", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontWeight: 800, fontSize: 13, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(74,140,63,0.25)" },
 
   // Stats
   statsRow:       { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 12 },
