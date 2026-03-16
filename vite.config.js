@@ -4,7 +4,7 @@ import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
   // Change this to your GitHub repo name: /<repo-name>/
-  base: "/diamond-manager/",
+  base: "/",
 
   plugins: [
     react(),
