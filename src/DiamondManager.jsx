@@ -9,13 +9,14 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 // ── League Data ─────────────────────────────────────────────────────────────
 
 const FIELDS = [
-  { id: "f1",       name: "Field 1",        short: "F1", size: "46/60",       lights: true,  emoji: "🥎" },
-  { id: "f2",       name: "Field 2",        short: "F2", size: "46/60 · 50/70", lights: true, emoji: "⚾" },
-  { id: "f3",       name: "Field 3",        short: "F3", size: "46/60",       lights: false, emoji: "⚾" },
-  { id: "f4",       name: "Field 4",        short: "F4", size: "60/90",       lights: false, emoji: "⚾" },
-  { id: "f7",       name: "Field 7",        short: "F7", size: "46/60",       lights: false, emoji: "⚾" },
-  { id: "church",   name: "Church Field",   short: "CH", size: "Tee",        lights: false, emoji: "🧢" },
-  { id: "football", name: "Football Field", short: "FB", size: "Multi",      lights: false, emoji: "🏟️" },
+  { id: "pavilion", name: "Batting Pavilion", short: "BP", size: "4 Lanes",    lights: false, emoji: "🏏" },
+  { id: "f1",       name: "Field 1",          short: "F1", size: "46/60",      lights: true,  emoji: "🥎" },
+  { id: "f2",       name: "Field 2",          short: "F2", size: "46/60 · 50/70", lights: true, emoji: "⚾" },
+  { id: "f3",       name: "Field 3",          short: "F3", size: "46/60",      lights: false, emoji: "⚾" },
+  { id: "f4",       name: "Field 4",          short: "F4", size: "60/90",      lights: false, emoji: "⚾" },
+  { id: "f7",       name: "Field 7",          short: "F7", size: "46/60",      lights: false, emoji: "⚾" },
+  { id: "church",   name: "Church Field",     short: "CH", size: "Tee",        lights: false, emoji: "🧢" },
+  { id: "football", name: "Football Field",   short: "FB", size: "Multi",      lights: false, emoji: "🏟️" },
 ];
 
 const DIVISIONS = [
@@ -42,7 +43,7 @@ const EVENT_TYPES = [
 ];
 
 // Baseball-themed row accent colours: grass, dirt, chalk, clay, outfield…
-const FIELD_STRIPE = ["#4A8C3F", "#C49A5C", "#8B7355", "#2E7D32", "#A1887F", "#6D9B3A", "#D4A574"];
+const FIELD_STRIPE = ["#5D4037", "#4A8C3F", "#C49A5C", "#8B7355", "#2E7D32", "#A1887F", "#6D9B3A", "#D4A574"];
 
 // ── Derived constants ───────────────────────────────────────────────────────
 
